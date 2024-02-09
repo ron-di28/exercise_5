@@ -14,11 +14,12 @@ app = Flask(__name__)
 # but don't change them here.
 app.debug = True
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+
+
 @app.after_request
 def add_header(response):
     response.headers["Cache-Control"] = "no-cache"
     return response
-
 
 
 def get_db():
@@ -30,11 +31,13 @@ def get_db():
         setattr(g, '_database', db)
     return db
 
+
 @app.teardown_appcontext
 def close_connection(exception):
     db = getattr(g, '_database', None)
     if db is not None:
         db.close()
+
 
 def query_db(query, args=(), one=False):
     db = get_db()
@@ -51,6 +54,7 @@ def query_db(query, args=(), one=False):
         return rows
     return None
 
+
 def new_user():
     name = "Unnamed User #" + ''.join(random.choices(string.digits, k=6))
     password = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
@@ -61,12 +65,14 @@ def new_user():
         one=True)
     return u
 
+
 def get_user_from_cookie(request):
     user_id = request.cookies.get('user_id')
     password = request.cookies.get('user_password')
     if user_id and password:
         return query_db('select * from users where id = ? and password = ?', [user_id, password], one=True)
     return None
+
 
 def render_with_error_handling(template, **kwargs):
     try:
@@ -100,6 +106,7 @@ def create_room():
         return redirect(f'{room["id"]}')
     else:
         return app.send_static_file('create_room.html')
+
 
 @app.route('/signup', methods=['GET', 'POST'])
 def signup():
@@ -143,10 +150,13 @@ def login():
         return redirect('/')
     
     if request.method == 'POST':
-        name = request.form['name']
-        password = request.form['name']
+        name = request.form['username']
+        print(name)
+        password = request.form['password']
+        print(password)
         u = query_db('select * from users where name = ? and password = ?', [name, password], one=True)
         if user:
+            print("hello")
             resp = make_response(redirect("/"))
             resp.set_cookie('user_id', u.id)
             resp.set_cookie('user_password', u.password)
@@ -171,16 +181,105 @@ def room(room_id):
             room=room, user=user)
 
 # -------------------------------- API ROUTES ----------------------------------
+def validate_api_key(user_id, api_key):
+    db = get_db()
+    user = db.execute('SELECT api_key FROM users WHERE id = ?', [user_id]).fetchone()
+    return user and user['api_key'] == api_key
 
-# POST to change the user's name
-@app.route('/api/user/name')
-def update_username():
-    return {}, 403
-
-# POST to change the user's password
-
-# POST to change the name of a room
 
 # GET to get all the messages in a room
+@app.route('/api/rooms/<int:room_id>/messages', methods=['GET'])
+def get_room_messages(room_id):
+    api_key = request.headers.get('X-Api-Key')
+    user_id = request.headers.get('User-ID')
+
+    if not api_key or not user_id or not validate_api_key(user_id, api_key):
+        abort(403, description="Invalid or missing API Key")
+
+    messages = query_db(
+        'SELECT u.name, m.body, m.id FROM messages m LEFT JOIN users u ON m.user_id = u.id WHERE room_id = ?',
+        [room_id])
+    return jsonify([dict(msg) for msg in messages])
+
 
 # POST to post a new message to a room
+@app.route('/api/rooms/<int:room_id>/messages', methods=['POST'])
+def post_message(room_id):
+    api_key = request.headers.get('X-Api-Key')
+    user_id = request.headers.get('User-ID')
+
+    if not api_key or not user_id or not validate_api_key(user_id, api_key):
+        abort(403, description="Invalid or missing API Key")
+
+    body = request.args.get('comment')
+    try:
+        query = 'INSERT INTO messages (user_id, room_id, body) VALUES (?, ?, ?)'
+        args = (user_id, room_id, body)
+        db = get_db()
+        db.execute(query, args)
+        db.commit()
+        return jsonify({'success': 'Message posted'}), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# POST to change the user's name
+@app.route('/api/user/name', methods=['POST'])
+def update_username():
+    api_key = request.headers.get('X-Api-Key')
+    user_id = request.headers.get('User-ID')
+    new_username = request.json.get('newUsername')
+
+    if not api_key or not new_username or not user_id or not validate_api_key(user_id, api_key):
+        return jsonify({'error': 'Unauthorized or Missing Data'}), 403
+
+    try:
+        db = get_db()
+        db.execute('UPDATE users SET name = ? WHERE id = ?', [new_username, user_id])
+        db.commit()
+        return jsonify({'success': 'Username updated'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/user/password', methods=['POST'])
+def update_password():
+    api_key = request.headers.get('X-Api-Key')
+    user_id = request.headers.get('User-ID')
+    new_password = request.json.get('newPassword')
+
+    if not api_key or not new_password or not user_id or not validate_api_key(user_id, api_key):
+        return jsonify({'error': 'Unauthorized or Missing Data'}), 403
+
+    try:
+        db = get_db()
+        db.execute('UPDATE users SET password = ? WHERE id = ?', [new_password, user_id])
+        db.commit()
+        return jsonify({'success': 'Password updated'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# POST to change the name of a room
+@app.route('/api/rooms/<int:room_id>', methods=['POST'])
+def update_room_name(room_id):
+    api_key = request.headers.get('X-Api-Key')
+    user_id = request.headers.get('User-ID')
+    new_name = request.json.get('name')
+
+    if not api_key or not new_name or not user_id or not validate_api_key(user_id, api_key):
+        return jsonify({'error': 'Unauthorized or Missing Data'}), 403
+
+    try:
+        db = get_db()
+        db.execute('UPDATE rooms SET name = ? WHERE id = ?', [new_name, room_id])
+        db.commit()
+        return jsonify({'success': 'Room name updated', 'name': new_name}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+
+
+
+
